@@ -56,8 +56,11 @@ fn processLine(line: []u8) !void {
 
     current_sound = try engine.createSoundFromFile(path, .{});
     try current_sound.?.start();
+}
 
-    std.debug.print("Playing: {s}\n", .{url});
+fn waitForYazi(yazi: *std.process.Child, hover: *std.process.Child) void {
+    _ = yazi.wait(io) catch {};
+    hover.kill(io);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -71,14 +74,29 @@ pub fn main(init: std.process.Init) !void {
     engine = try zaudio.Engine.create(null);
     defer engine.destroy();
 
-    var child = try std.process.spawn(init.io, .{
+    var yazi = try std.process.spawn(init.io, .{
+        .argv = &.{"yazi"},
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    defer yazi.kill(init.io);
+    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), .awake) catch {};
+
+    var hover = try std.process.spawn(init.io, .{
         .argv = &.{ "ya", "sub", "hover" },
         .stdout = .pipe,
         .stderr = .inherit,
     });
-    defer child.kill(init.io);
+    defer hover.kill(init.io);
 
-    const stdout = child.stdout orelse return error.NoStdout;
+    const stdout = hover.stdout orelse return error.NoStdout;
+
+    const waiter = try std.Thread.spawn(.{}, waitForYazi, .{
+        &yazi,
+        &hover,
+    });
+    defer waiter.join();
 
     var read_buffer: [ReadBufferSize]u8 = undefined;
     var line_buffer: [LineBufferSize]u8 = undefined;
