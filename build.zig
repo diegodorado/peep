@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "resonic",
+        .name = "peep",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -28,6 +28,6 @@ pub fn build(b: *std.Build) void {
 
     const run = b.addRunArtifact(exe);
 
-    const run_step = b.step("run", "Run resonic");
+    const run_step = b.step("run", "Run peep");
     run_step.dependOn(&run.step);
 }

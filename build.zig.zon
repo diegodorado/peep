@@ -1,6 +1,6 @@
 .{
-    .fingerprint = 0x4158fbf9e5338d1c,
-    .name = .resonic,
+    .fingerprint = 0x4ce898954d042f1d,
+    .name = .peep,
     .version = "0.1.0",
 
     .dependencies = .{
