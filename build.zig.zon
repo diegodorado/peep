@@ -1,0 +1,18 @@
+.{
+    .fingerprint = 0x4158fbf9e5338d1c,
+    .name = .resonic,
+    .version = "0.1.0",
+
+    .dependencies = .{
+        .zaudio = .{
+            .url = "https://github.com/zig-gamedev/zaudio/archive/refs/heads/main.tar.gz",
+            .hash = "zaudio-0.11.0-dev-_M-91iAzQQCTA0NTL2NJsB1qm6kMRrMWRQApIuyX-1Im",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
