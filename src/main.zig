@@ -41,7 +41,12 @@ fn processLine(line: []u8) !void {
 
     const url = line[url_start..url_end];
 
-    if (!std.mem.endsWith(u8, url, ".wav")) {
+    const is_audio =
+        std.ascii.endsWithIgnoreCase(url, ".wav") or
+        std.ascii.endsWithIgnoreCase(url, ".mp3") or
+        std.ascii.endsWithIgnoreCase(url, ".flac");
+
+    if (!is_audio) {
         stopSound();
         return;
     }
@@ -54,7 +59,14 @@ fn processLine(line: []u8) !void {
 
     const path: [:0]const u8 = @ptrCast(line[url_start..url_end]);
 
-    current_sound = try engine.createSoundFromFile(path, .{});
+    current_sound = engine.createSoundFromFile(path, .{}) catch |err| {
+        // file might have just been deleted with yazi
+        if (err == error.DoesNotExist)
+            return;
+
+        return err;
+    };
+
     try current_sound.?.start();
 }
 
