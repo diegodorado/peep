@@ -2,8 +2,10 @@ const std = @import("std");
 const zaudio = @import("zaudio");
 
 const ImageWidth = 800;
-const ImageHeight = 200;
+const ImageHeight = 400;
 const FramesPerRead = 4096;
+const silence_dbfs: f32 = -60.0;
+const silence_amplitude: f32 = std.math.pow(f32, 10.0, silence_dbfs / 20.0);
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -146,6 +148,18 @@ fn makePixels(
             ImageHeight - 1,
             center + half_height,
         );
+
+        if (amplitude <= silence_amplitude) {
+            for ((ImageHeight * 7 / 16)..(ImageHeight * 9 / 16)) |y| {
+                const pixel =
+                    (y * ImageWidth + x) * 4;
+
+                pixels[pixel + 0] = 255;
+                pixels[pixel + 1] = 0;
+                pixels[pixel + 2] = 0;
+                pixels[pixel + 3] = 128;
+            }
+        }
 
         for (top..bottom + 1) |y| {
             const pixel =
