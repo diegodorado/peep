@@ -2,3 +2,6 @@
 zig-out/
 zig-pkg/
 
+# Gentle AI / SDD tooling local cache
+.atl/
+
