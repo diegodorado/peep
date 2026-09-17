@@ -16,6 +16,39 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run peep");
     run_step.dependOn(&run.step);
+
+    // Unit tests. This step does not run the tests itself: pass each
+    // addTest result to addRunArtifact to execute it.
+    const test_sources = [_][]const u8{
+        "src/peak.test.zig",
+        "src/peep.test.zig",
+    };
+
+    const test_step = b.step("test", "Run unit tests");
+
+    for (test_sources) |source| {
+        const test_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        test_module.addImport(
+            "zaudio",
+            zaudio.module("root"),
+        );
+
+        test_module.linkLibrary(
+            zaudio.artifact("miniaudio"),
+        );
+
+        const unit_tests = b.addTest(.{
+            .root_module = test_module,
+        });
+
+        const run_unit_tests = b.addRunArtifact(unit_tests);
+        test_step.dependOn(&run_unit_tests.step);
+    }
 }
 
 fn addExecutable(

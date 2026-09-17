@@ -1,0 +1,44 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Zig 0.17.0-dev.1099+7db2ef610
+  Architecture: Two executables (peep, peak) sharing zaudio dependency
+  Testing: `zig build test` — two test modules (src/peak.test.zig, src/peep.test.zig), strict TDD active
+  Style: Standard Zig conventions, build.zig.zon for dependencies
+
+strict_tdd: true
+
+projects:
+  - path: .
+    stack: zig
+    test_command: "zig build test"
+    framework: "zig test modules"
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Document Zig-specific considerations (memory safety, build system)
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Consider Zig's comptime capabilities
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Reference specific Zig files and functions
+  apply:
+    guidelines:
+      - Follow existing code patterns
+      - Use Zig's standard library conventions
+      - Leverage zaudio dependency properly
+    tdd: true
+    test_command: "zig build test"
+  verify:
+    test_command: "zig build test"
+    build_command: "zig build"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

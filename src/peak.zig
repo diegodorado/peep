@@ -1,9 +1,8 @@
 const std = @import("std");
 const zaudio = @import("zaudio");
 
-const ImageWidth = 800;
-const ImageHeight = 400;
-const FramesPerRead = 4096;
+const ImageWidth = 400;
+const ImageHeight = 200;
 const silence_dbfs: f32 = -60.0;
 const silence_amplitude: f32 = std.math.pow(f32, 10.0, silence_dbfs / 20.0);
 
@@ -15,14 +14,6 @@ pub fn main(init: std.process.Init) !void {
 
     _ = args.next() orelse return error.MissingArgument;
     const path = args.next() orelse return error.MissingArgument;
-
-    var png = false;
-
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--png")) {
-            png = true;
-        }
-    }
 
     zaudio.init(allocator);
     defer zaudio.deinit();
@@ -48,72 +39,92 @@ pub fn main(init: std.process.Init) !void {
 
     const frames = try decoder.getLengthInPCMFrames();
 
-    var amplitudes: [ImageWidth]f32 = undefined;
-    @memset(&amplitudes, 0);
+    // The whole decoded file is read into memory so the waveform buckets
+    // can be computed in a single pass.
+    const frame_count: usize = @intCast(frames);
+
+    const total_samples = frame_count * channels;
 
     const buffer = try allocator.alloc(
         f32,
-        FramesPerRead * channels,
+        total_samples,
     );
     defer allocator.free(buffer);
 
-    var frame_offset: u64 = 0;
+    var total_read: usize = 0;
 
-    while (frame_offset < frames) {
-        const frames_to_read = @min(
-            FramesPerRead,
-            frames - frame_offset,
+    while (total_read < frame_count) {
+        const frames_to_read = @as(
+            u64,
+            @intCast(frame_count - total_read),
         );
 
         const frames_read = try decoder.readPCMFrames(
-            buffer.ptr,
+            buffer.ptr + total_read * channels,
             frames_to_read,
         );
 
         if (frames_read == 0)
             break;
 
-        for (0..frames_read) |frame| {
-            var amplitude: f32 = 0;
+        total_read += @intCast(frames_read);
+    }
 
-            for (0..channels) |channel| {
-                const sample =
-                    buffer[frame * channels + channel];
+    const amplitudes = try amplitudeBuckets(
+        allocator,
+        buffer[0 .. total_read * channels],
+        @intCast(total_read),
+        channels,
+        ImageWidth,
+    );
+    defer allocator.free(amplitudes);
 
-                amplitude = @max(
-                    amplitude,
-                    @abs(sample),
-                );
-            }
+    try renderPng(
+        init.io,
+        allocator,
+        amplitudes,
+    );
+}
 
-            const absolute_frame =
-                frame_offset + frame;
+pub fn amplitudeBuckets(
+    allocator: std.mem.Allocator,
+    buffer: []const f32,
+    frames: u64,
+    channels: u32,
+    width: usize,
+) ![]f32 {
+    const amplitudes = try allocator.alloc(f32, width);
+    @memset(amplitudes, 0);
 
-            const bucket = @min(
-                absolute_frame * ImageWidth / frames,
-                ImageWidth - 1,
+    const frame_count: usize = @intCast(frames);
+    const channel_count: usize = channels;
+
+    if (frame_count == 0 or width == 0)
+        return amplitudes;
+
+    for (0..frame_count) |frame| {
+        var amplitude: f32 = 0;
+
+        for (0..channel_count) |channel| {
+            const sample =
+                buffer[frame * channel_count + channel];
+
+            amplitude = @max(
+                amplitude,
+                @abs(sample),
             );
-
-            amplitudes[bucket] =
-                @max(amplitudes[bucket], amplitude);
         }
 
-        frame_offset += frames_read;
+        const bucket = @min(
+            frame * width / frame_count,
+            width -| 1,
+        );
+
+        amplitudes[bucket] =
+            @max(amplitudes[bucket], amplitude);
     }
 
-    if (png) {
-        try renderPng(
-            init.io,
-            allocator,
-            &amplitudes,
-        );
-    } else {
-        try renderKitty(
-            init.io,
-            allocator,
-            &amplitudes,
-        );
-    }
+    return amplitudes;
 }
 
 fn makePixels(
@@ -175,30 +186,13 @@ fn makePixels(
     return pixels;
 }
 
-fn renderKitty(
-    io: std.Io,
+pub fn makeRawRaster(
     allocator: std.mem.Allocator,
     amplitudes: []const f32,
-) !void {
-    const pixels = try makePixels(
-        allocator,
-        amplitudes,
-    );
-    defer allocator.free(pixels);
+) ![]u8 {
+    if (amplitudes.len == 0)
+        return allocator.alloc(u8, 0);
 
-    try writeKitty(
-        io,
-        pixels,
-        ImageWidth,
-        ImageHeight,
-    );
-}
-
-fn renderPng(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    amplitudes: []const f32,
-) !void {
     const pixels = try makePixels(
         allocator,
         amplitudes,
@@ -213,145 +207,98 @@ fn renderPng(
     //
     //     ImageHeight * (1 + ImageWidth * 4)
     //
-    // For 800x200 this is only 320,200 bytes.
+    // For 400x200 this is 320,200 bytes.
 
     const raw_size =
         ImageHeight * (1 + ImageWidth * 4);
 
-    // A zlib stream containing DEFLATE "stored" blocks needs:
-    //
-    // - 2 bytes zlib header
-    // - 5 bytes per DEFLATE block
-    // - raw image data
-    // - 4 bytes Adler-32
-
-    const max_block_size = 65535;
-
-    const block_count =
-        (raw_size + max_block_size - 1) / max_block_size;
-
-    const zlib_size =
-        2 +
-        raw_size +
-        block_count * 5 +
-        4;
-
-    const zlib_data = try allocator.alloc(
-        u8,
-        zlib_size,
-    );
-    defer allocator.free(zlib_data);
-
-    var zlib_pos: usize = 0;
-
-    // Zlib header:
-    //
-    // CMF = 0x78
-    // FLG = 0x01
-    //
-    // This means DEFLATE with a 32K window,
-    // no compression / fastest strategy.
-    zlib_data[zlib_pos] = 0x78;
-    zlib_pos += 1;
-
-    zlib_data[zlib_pos] = 0x01;
-    zlib_pos += 1;
-
-    var adler_a: u32 = 1;
-    var adler_b: u32 = 0;
+    const raw = try allocator.alloc(u8, raw_size);
 
     var raw_pos: usize = 0;
 
-    while (raw_pos < raw_size) {
-        const remaining = raw_size - raw_pos;
-        const block_size = @min(
-            remaining,
-            max_block_size,
+    for (0..ImageHeight) |row| {
+        // PNG filter byte 0 = "None".
+        raw[raw_pos] = 0;
+        raw_pos += 1;
+
+        const row_start = row * ImageWidth * 4;
+
+        @memcpy(
+            raw[raw_pos .. raw_pos + ImageWidth * 4],
+            pixels[row_start .. row_start + ImageWidth * 4],
         );
 
-        const final_block =
-            raw_pos + block_size == raw_size;
-
-        // DEFLATE stored block header.
-        //
-        // BFINAL = bit 0
-        // BTYPE  = bits 1..2 = 00
-        //
-        // Since this is byte-aligned, the remaining
-        // bits in this byte are zero.
-
-        zlib_data[zlib_pos] =
-            if (final_block) 0x01 else 0x00;
-        zlib_pos += 1;
-
-        const len = @as(u16, @intCast(block_size));
-        const nlen = ~len;
-
-        // LEN, little endian.
-        zlib_data[zlib_pos + 0] =
-            @truncate(len);
-        zlib_data[zlib_pos + 1] =
-            @truncate(len >> 8);
-
-        // NLEN, one's complement, little endian.
-        zlib_data[zlib_pos + 2] =
-            @truncate(nlen);
-        zlib_data[zlib_pos + 3] =
-            @truncate(nlen >> 8);
-
-        zlib_pos += 4;
-
-        // Copy the raw scanlines.
-        //
-        // PNG filter byte 0 = "None".
-
-        for (0..block_size) |i| {
-            const raw_index = raw_pos + i;
-
-            var value: u8 = undefined;
-
-            if (raw_index % (ImageWidth * 4 + 1) == 0) {
-                value = 0;
-            } else {
-                const pixel_index =
-                    raw_index -
-                    (raw_index /
-                    (ImageWidth * 4 + 1)) -
-                    1;
-
-                value = pixels[pixel_index];
-            }
-
-            zlib_data[zlib_pos] = value;
-            zlib_pos += 1;
-
-            // Adler-32.
-            adler_a += value;
-            if (adler_a >= 65521)
-                adler_a -= 65521;
-
-            adler_b += adler_a;
-            if (adler_b >= 65521)
-                adler_b -= 65521;
-        }
-
-        raw_pos += block_size;
+        raw_pos += ImageWidth * 4;
     }
 
-    const adler =
-        (adler_b << 16) | adler_a;
+    return raw;
+}
 
-    // Adler-32 is big endian.
-    zlib_data[zlib_pos + 0] =
-        @truncate(adler >> 24);
-    zlib_data[zlib_pos + 1] =
-        @truncate(adler >> 16);
-    zlib_data[zlib_pos + 2] =
-        @truncate(adler >> 8);
-    zlib_data[zlib_pos + 3] =
-        @truncate(adler);
+pub fn deflateZlib(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) ![]u8 {
+    // A stored DEFLATE block is the least compressed encoding, so a zlib
+    // stream can never exceed:
+    //
+    // - 2 bytes zlib header
+    // - 5 bytes per DEFLATE stored block
+    // - raw image data
+    // - 4 bytes Adler-32
+    //
+    // `std.compress.flate` picks the smallest block encoding per block, so
+    // this is a hard upper bound for the compressed output.
 
-    zlib_pos += 4;
+    const max_block_size = 65535;
+
+    const zlib_capacity = @max(
+        64,
+        2 +
+            raw.len +
+            (raw.len + max_block_size - 1) / max_block_size * 5 +
+            4,
+    );
+
+    const zlib_data = try allocator.alloc(
+        u8,
+        zlib_capacity,
+    );
+    errdefer allocator.free(zlib_data);
+
+    var out: std.Io.Writer = .fixed(zlib_data);
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+
+    var compress = try std.compress.flate.Compress.init(
+        &out,
+        &window,
+        .zlib,
+        .default,
+    );
+
+    try compress.writer.writeAll(raw);
+    try compress.finish();
+
+    // Shrink to the exact stream length so callers can free the slice
+    // they receive.
+    return allocator.realloc(zlib_data, out.buffered().len);
+}
+
+fn renderPng(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    amplitudes: []const f32,
+) !void {
+    const raw = try makeRawRaster(
+        allocator,
+        amplitudes,
+    );
+    defer allocator.free(raw);
+
+    const zlib_data = try deflateZlib(
+        allocator,
+        raw,
+    );
+    defer allocator.free(zlib_data);
 
     const stdout = std.Io.File.stdout();
 
@@ -393,7 +340,7 @@ fn renderPng(
     try writePngChunk(
         out,
         "IDAT",
-        zlib_data[0..zlib_pos],
+        zlib_data,
     );
 
     // IEND.
@@ -456,15 +403,6 @@ fn writeU32BE(
     dest[3] = @truncate(v);
 }
 
-fn crc32(
-    data: []const u8,
-) u32 {
-    return ~crc32Update(
-        0xffffffff,
-        data,
-    );
-}
-
 fn crc32Update(
     initial: u32,
     data: []const u8,
@@ -485,68 +423,4 @@ fn crc32Update(
     }
 
     return crc;
-}
-
-fn writeKitty(
-    io: std.Io,
-    pixels: []const u8,
-    width: usize,
-    height: usize,
-) !void {
-    const stdout = std.Io.File.stdout();
-
-    var writer = stdout.writer(io, &.{});
-    const out = &writer.interface;
-
-    const chunk_size = 4096;
-
-    var encoded_buffer: [
-        std.base64.standard.Encoder.calcSize(chunk_size)
-    ]u8 = undefined;
-
-    var offset: usize = 0;
-    var first = true;
-
-    while (offset < pixels.len) {
-        const size = @min(
-            chunk_size,
-            pixels.len - offset,
-        );
-
-        const encoded =
-            std.base64.standard.Encoder.encode(
-            &encoded_buffer,
-            pixels[offset .. offset + size],
-        );
-
-        const more =
-            offset + size < pixels.len;
-
-        if (first) {
-            try out.print(
-                "\x1b_Ga=T,f=32,s={},v={},m={};{s}\x1b\\",
-                .{
-                    width,
-                    height,
-                    @as(u8, if (more) 1 else 0),
-                    encoded,
-                },
-            );
-
-            first = false;
-        } else {
-            try out.print(
-                "\x1b_Gm={};{s}\x1b\\",
-                .{
-                    @as(u8, if (more) 1 else 0),
-                    encoded,
-                },
-            );
-        }
-
-        offset += size;
-    }
-
-    try out.writeAll("\n");
-    try out.flush();
 }
